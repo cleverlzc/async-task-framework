@@ -1,0 +1,92 @@
+# Spring Boot 应用配置文件
+# 异步任务处理框架 - 纯MySQL + 定时轮询方案
+
+# 服务器配置
+server:
+  port: 8080
+  servlet:
+    context-path: /async-task
+
+# Spring 核心配置
+spring:
+  application:
+    name: async-task-framework
+  
+  # 数据源配置
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # MySQL 连接 URL，使用 utf8mb4 编码，关闭 SSL，指定上海时区
+    url: jdbc:mysql://localhost:3306/async_task?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+    
+    # HikariCP 连接池配置（Spring Boot 默认连接池）
+    hikari:
+      minimum-idle: 5              # 最小空闲连接数
+      maximum-pool-size: 20        # 最大连接池大小
+      connection-timeout: 30000    # 连接超时时间（毫秒）
+      idle-timeout: 600000         # 空闲连接超时时间（毫秒）
+      max-lifetime: 1800000        # 连接最大生命周期（毫秒）
+      connection-test-query: SELECT 1
+  
+  # Jackson JSON 配置
+  jackson:
+    time-zone: GMT+8
+    date-format: yyyy-MM-dd HH:mm:ss
+    default-property-inclusion: non_null
+
+# MyBatis 配置
+mybatis:
+  # Mapper XML 文件位置
+  mapper-locations: classpath:mapper/*.xml
+  # 实体类包路径
+  type-aliases-package: com.example.async.entity
+  configuration:
+    # 开启驼峰命名转换
+    map-underscore-to-camel-case: true
+    # 打印 SQL 日志（生产环境建议关闭）
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+# 异步任务框架配置
+async-task:
+  # 调度器配置
+  scheduler:
+    # 轮询间隔（毫秒），默认 500ms
+    polling-interval: 500
+    # 每次批量认领的任务数量，默认 50
+    batch-size: 50
+    # 是否启用调度器，默认启用
+    enabled: true
+  
+  # 执行器配置
+  executor:
+    # 默认任务超时时间（秒），默认 300 秒
+    default-timeout: 300
+    # 默认最大重试次数，默认 3 次
+    default-max-retry: 3
+    # 执行节点标识，默认从环境变量 HOSTNAME 读取，否则使用 local-node
+    execute-node: ${HOSTNAME:local-node}
+  
+  # 线程池配置
+  thread-pool:
+    # 核心线程数，默认 8
+    core-pool-size: 8
+    # 最大线程数，默认 16
+    max-pool-size: 16
+    # 队列容量，默认 1000
+    queue-capacity: 1000
+    # 空闲线程存活时间（秒），默认 60
+    keep-alive-seconds: 60
+    # 线程名称前缀
+    thread-name-prefix: async-task-executor-
+    # 拒绝策略：CALLER_RUNS（调用者运行）、ABORT（抛出异常）、DISCARD（丢弃）、DISCARD_OLDEST（丢弃最旧）
+    rejection-policy: CALLER_RUNS
+
+# 日志配置
+logging:
+  level:
+    root: INFO
+    com.example.async: DEBUG
+    com.example.async.mapper: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"
