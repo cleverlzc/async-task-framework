@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" 
+    "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.async.mapper.TaskMapper">
+
+    <!-- 结果映射：异步任务 -->
+    <resultMap id="AsyncTaskResultMap" type="com.example.async.entity.AsyncTask">
+        <id column="id" property="id"/>
+        <result column="task_type" property="taskType"/>
+        <result column="business_key" property="businessKey"/>
+        <result column="payload" property="payload"/>
+        <result column="priority" property="priority"/>
+        <result column="status" property="status"/>
+        <result column="retry_count" property="retryCount"/>
+        <result column="max_retry" property="maxRetry"/>
+        <result column="error_msg" property="errorMsg"/>
+        <result column="result" property="result"/>
+        <result column="execute_node" property="executeNode"/>
+        <result column="execute_start_time" property="executeStartTime"/>
+        <result column="execute_end_time" property="executeEndTime"/>
+        <result column="timeout_seconds" property="timeoutSeconds"/>
+        <result column="version" property="version"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <!-- 结果映射：执行日志 -->
+    <resultMap id="TaskExecutionLogResultMap" type="com.example.async.entity.TaskExecutionLog">
+        <id column="id" property="id"/>
+        <result column="task_id" property="taskId"/>
+        <result column="execute_node" property="executeNode"/>
+        <result column="status" property="status"/>
+        <result column="error_msg" property="errorMsg"/>
+        <result column="execute_start_time" property="executeStartTime"/>
+        <result column="execute_end_time" property="executeEndTime"/>
+        <result column="duration_ms" property="durationMs"/>
+        <result column="create_time" property="createTime"/>
+    </resultMap>
+
+    <!-- ========== 基础 CRUD 操作 ========== -->
+
+    <!-- 插入任务 -->
+    <insert id="insert" parameterType="com.example.async.entity.AsyncTask" 
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO async_task (
+            task_type, business_key, payload, priority, status,
+            retry_count, max_retry, timeout_seconds, version
+        ) VALUES (
+            #{taskType}, #{businessKey}, #{payload}, #{priority}, #{status},
+            #{retryCount}, #{maxRetry}, #{timeoutSeconds}, #{version}
+        )
+    </insert>
+
+    <!-- 根据ID查询任务 -->
+    <select id="selectById" parameterType="long" resultMap="AsyncTaskResultMap">
+        SELECT * FROM async_task WHERE id = #{id}
+    </select>
+
+    <!-- 根据业务键查询任务 -->
+    <select id="selectByBusinessKey" parameterType="string" resultMap="AsyncTaskResultMap">
+        SELECT * FROM async_task WHERE business_key = #{businessKey}
+    </select>
+
+    <!-- ========== 任务认领（乐观锁） ========== -->
+
+    <!-- 认领单个任务：使用乐观锁防止并发认领 -->
+    <update id="claimTask">
+        UPDATE async_task
+        SET status = 1,
+            execute_node = #{executeNode},
+            execute_start_time = #{executeStartTime},
+            version = version + 1
+        WHERE id = #{taskId}
+          AND status = 0
+          AND version = #{version}
+          AND retry_count &lt; max_retry
+    </update>
+
+    <!-- 批量认领任务 -->
+    <update id="batchClaimTasks">
+        <foreach collection="taskIds" item="taskId" index="i" separator=";">
+            UPDATE async_task
+            SET status = 1,
+                execute_node = #{executeNode},
+                execute_start_time = #{executeStartTime},
+                version = version + 1
+            WHERE id = #{taskIds[${i}]}
+              AND status = 0
+              AND version = #{versions[${i}]}
+              AND retry_count &lt; max_retry
+        </foreach>
+    </update>
+
+    <!-- ========== 查询待处理任务 ========== -->
+
+    <!-- 查询待处理任务（按优先级排序） -->
+    <select id="selectPendingTasks" resultMap="AsyncTaskResultMap">
+        SELECT * FROM async_task
+        WHERE status = 0
+          AND retry_count &lt; max_retry
+        ORDER BY priority ASC, create_time ASC
+        LIMIT #{limit}
+    </select>
+
+    <!-- ========== 状态更新 ========== -->
+
+    <!-- 更新为成功状态 -->
+    <update id="updateToSuccess">
+        UPDATE async_task
+        SET status = 2,
+            result = #{result},
+            execute_end_time = #{executeEndTime},
+            version = version + 1
+        WHERE id = #{taskId}
+          AND version = #{version}
+    </update>
+
+    <!-- 更新为失败状态 -->
+    <update id="updateToFailed">
+        UPDATE async_task
+        SET status = 3,
+            error_msg = #{errorMsg},
+            execute_end_time = #{executeEndTime},
+            version = version + 1
+        WHERE id = #{taskId}
+          AND version = #{version}
+    </update>
+
+    <!-- ========== 重试和超时处理 ========== -->
+
+    <!-- 增加重试次数并重置为待处理状态 -->
+    <update id="incrementRetryAndReset">
+        UPDATE async_task
+        SET status = 0,
+            retry_count = retry_count + 1,
+            execute_node = NULL,
+            execute_start_time = NULL,
+            execute_end_time = NULL,
+            version = version + 1
+        WHERE id = #{taskId}
+          AND version = #{version}
+          AND retry_count &lt; max_retry
+    </update>
+
+    <!-- 查询超时任务 -->
+    <select id="selectTimeoutTasks" resultMap="AsyncTaskResultMap">
+        SELECT * FROM async_task
+        WHERE status = 1
+          AND execute_start_time IS NOT NULL
+          AND DATE_ADD(execute_start_time, INTERVAL timeout_seconds SECOND) &lt; NOW()
+        ORDER BY execute_start_time ASC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 重置超时任务 -->
+    <update id="resetTimeoutTask">
+        UPDATE async_task
+        SET status = 0,
+            execute_node = NULL,
+            execute_start_time = NULL,
+            execute_end_time = NULL,
+            retry_count = retry_count + 1,
+            version = version + 1
+        WHERE id = #{taskId}
+          AND version = #{version}
+          AND retry_count &lt; max_retry
+    </update>
+
+    <!-- ========== 执行日志 ========== -->
+
+    <!-- 插入执行日志 -->
+    <insert id="insertExecutionLog" parameterType="com.example.async.entity.TaskExecutionLog"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO task_execution_log (
+            task_id, execute_node, status, error_msg,
+            execute_start_time, execute_end_time, duration_ms
+        ) VALUES (
+            #{taskId}, #{executeNode}, #{status}, #{errorMsg},
+            #{executeStartTime}, #{executeEndTime}, #{durationMs}
+        )
+    </insert>
+
+    <!-- 查询任务的执行日志 -->
+    <select id="selectExecutionLogs" parameterType="long" resultMap="TaskExecutionLogResultMap">
+        SELECT * FROM task_execution_log
+        WHERE task_id = #{taskId}
+        ORDER BY create_time DESC
+    </select>
+
+    <!-- ========== 统计查询 ========== -->
+
+    <!-- 按状态统计任务数量 -->
+    <select id="countByStatus" resultType="map">
+        SELECT status, COUNT(*) as count
+        FROM async_task
+        GROUP BY status
+    </select>
+
+    <!-- 按任务类型统计（最近24小时） -->
+    <select id="countByTaskType" resultType="map">
+        SELECT 
+            task_type,
+            COUNT(*) as total_count,
+            SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END) as success_count,
+            SUM(CASE WHEN status = 3 THEN 1 ELSE 0 END) as failed_count
+        FROM async_task
+        WHERE create_time &gt;= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        GROUP BY task_type
+    </select>
+
+    <!-- 更新或插入统计信息 -->
+    <update id="upsertStatistics">
+        INSERT INTO task_statistics (
+            task_type, stat_hour, total_count, success_count, failed_count, avg_duration_ms
+        ) VALUES (
+            #{taskType}, #{statHour}, #{totalCount}, #{successCount}, #{failedCount}, #{avgDurationMs}
+        )
+        ON DUPLICATE KEY UPDATE
+            total_count = total_count + #{totalCount},
+            success_count = success_count + #{successCount},
+            failed_count = failed_count + #{failedCount},
+            avg_duration_ms = (avg_duration_ms + #{avgDurationMs}) / 2
+    </update>
+
+    <!-- ========== 历史数据清理 ========== -->
+
+    <!-- 删除历史任务 -->
+    <delete id="deleteHistoryTasks">
+        DELETE FROM async_task
+        WHERE status IN (2, 4)
+          AND create_time &lt; #{beforeTime}
+        LIMIT #{limit}
+    </delete>
+
+    <!-- 删除历史日志 -->
+    <delete id="deleteHistoryLogs">
+        DELETE FROM task_execution_log
+        WHERE create_time &lt; #{beforeTime}
+        LIMIT #{limit}
+    </delete>
+
+</mapper>
